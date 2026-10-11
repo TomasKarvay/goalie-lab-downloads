@@ -1,0 +1,46 @@
+name: Publish verified Goalie Lab APK
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require private artifact read access
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_APK_READ_TOKEN }}
+        run: |
+          test -n "$SOURCE_TOKEN" || { echo "::error::Missing SOURCE_APK_READ_TOKEN"; exit 1; }
+
+      - name: Download existing APK from private build 14
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_APK_READ_TOKEN }}
+        run: |
+          mkdir -p staging
+          gh run download 38142383640 --repo TomasKarvay/givemikour --name GoalieLab-Android-APK --dir staging
+          test -s staging/goalie-lab.apk
+
+      - name: Validate original signing, package, and build number
+        run: |
+          set -euo pipefail
+          APK=staging/goalie-lab.apk
+          TOOL_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$TOOL_DIR/apksigner" verify --print-certs "$APK" > signature.txt
+          ACTUAL="$(sed -n 's/^V2 Signer: certificate SHA-256 digest: //p' signature.txt | head -n 1)"
+          EXPECTED=fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c
+          test "$ACTUAL" = "$EXPECTED" || { echo "::error::Original APK signature mismatch"; exit 1; }
+          BADGING="$("$TOOL_DIR/aapt" dump badging "$APK" | head -n 1)"
+          echo "$BADGING" | grep -F "name='cz.karvay.givemikour'"
+          echo "$BADGING" | grep -F "versionCode='14'"
+          echo "$BADGING" | grep -F "versionName='1.1.0'"
+          echo "Original certificate and Android 1.1.0 build 14 verified."
+          sha256sum "$APK" > SHA256SUMS.txt
+
+      - name: Create public release with only APK and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create android-1.1.0-build14 staging/goalie-lab.apk#goalie-lab.apk SHA256SUMS.txt --repo "${{ github.repository }}" --title "Goalie Lab 1.1.0 – Android build 14" --notes "Signed Android APK from verified GitHub Actions build 38142383640. Original signing identity confirmed. Source code is not included. Runtime launch and login still require device verification."
